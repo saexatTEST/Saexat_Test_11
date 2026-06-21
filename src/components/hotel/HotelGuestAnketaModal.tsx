@@ -29,6 +29,7 @@ import { HotelDatePicker } from './HotelDatePicker';
 import { CountrySelect } from './CountrySelect';
 import { isValidEmail, isValidPhone } from '@/lib/contactValidation';
 import { useHotelGrid } from '@/hooks/HotelGridContext';
+import { useCloudRecord } from '@/hooks/useCloudRecord';
 
 interface AnketaModalProps {
   open: boolean;
@@ -56,9 +57,6 @@ type AnketaForm = {
   acknowledgedName: string;
   acknowledged: boolean;
 };
-
-const STORAGE_PREFIX = 'sayohat-anketa:';
-const PASSPORT_PREFIX = 'guest-passport:booking:';
 
 type StoredPassport = Partial<{
   lastName: string; firstName: string; middleName: string;
@@ -146,6 +144,9 @@ export function HotelGuestAnketaModal({ open, onClose, booking }: AnketaModalPro
   const { categories, rooms } = useHotelGrid();
   const [form, setForm] = useState<AnketaForm>(() => emptyForm(booking));
 
+  const { records: anketaRecords, updateRecord: updateAnketaRecord } = useCloudRecord<AnketaForm>('guest-anketas');
+  const { records: passportRecords } = useCloudRecord<StoredPassport>('guest-passports');
+
   // Resolve which category a booking's room belongs to on the grid, so the
   // anketa chip selection mirrors what was assigned at booking time.
   const detectedCategoryId = useMemo(() => {
@@ -156,59 +157,34 @@ export function HotelGuestAnketaModal({ open, onClose, booking }: AnketaModalPro
   const [dirty, setDirty] = useState(false);
   const [warnOpen, setWarnOpen] = useState(false);
 
-  // Hydrate the form whenever the modal opens — pulling from BOTH the
-  // anketa-specific saved blob AND the per-booking passport entered through
-  // Guest Details. Result: anything captured anywhere about this booking is
-  // already filled in here.
+// Hydrate the form fully whenever the modal opens, AND keep re-hydrating
+  // fully as long as the user hasn't started typing yet (dirty === false) —
+  // this is what makes data entered elsewhere appear automatically before
+  // editing starts. Once the user starts typing, stop full resets so we
+  // never erase their in-progress keystrokes.
   useEffect(() => {
     if (!open) return;
     if (!booking) { setForm(emptyForm(null)); return; }
+    if (dirty) return;
     let base = emptyForm(booking);
-    try {
-      const raw = window.localStorage.getItem(STORAGE_PREFIX + booking.id);
-      if (raw) base = { ...base, ...(JSON.parse(raw) as Partial<AnketaForm>) };
-    } catch { /* ignore */ }
-    try {
-      const rawP = window.localStorage.getItem(PASSPORT_PREFIX + booking.id);
-      if (rawP) base = mergePassportIntoForm(base, JSON.parse(rawP) as StoredPassport);
-    } catch { /* ignore */ }
-    // Always honor the booking's actual category from the grid as the source
-    // of truth; the user can still override in the chip row below.
+    const savedAnketa = anketaRecords[booking.id];
+    if (savedAnketa) base = { ...base, ...savedAnketa };
+    const savedPassport = passportRecords[booking.id] as StoredPassport | undefined;
+    if (savedPassport) base = mergePassportIntoForm(base, savedPassport);
     if (detectedCategoryId) base.roomType = detectedCategoryId;
     setForm(base);
-  }, [open, booking, detectedCategoryId]);
+  }, [open, booking, detectedCategoryId, anketaRecords, passportRecords, dirty]);
 
-  // Live-react to passport edits made elsewhere (Guest Details panel saving
-  // while Anketa is open in another tab/role). Same merge-only-empty rule.
+  // Even after the user starts typing, still live-merge passport fields
+  // captured elsewhere (Guest Details, another device) — but only into
+  // fields that are CURRENTLY empty in this form, so it never overwrites
+  // what the user is actively entering here.
   useEffect(() => {
-    if (!open || !booking) return;
-    const reload = () => {
-      try {
-        const rawP = window.localStorage.getItem(PASSPORT_PREFIX + booking.id);
-        if (!rawP) return;
-        setForm((prev) => mergePassportIntoForm(prev, JSON.parse(rawP) as StoredPassport));
-      } catch { /* ignore */ }
-    };
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === PASSPORT_PREFIX + booking.id) reload();
-    };
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('sayohat-passport-changed', reload);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('sayohat-passport-changed', reload);
-    };
-  }, [open, booking]);
-
-  const update = <K extends keyof AnketaForm>(key: K, value: AnketaForm[K]) => {
-    setForm((prev) => ({ ...prev, [key]: value }));
-    setDirty(true);
-  };
-
-  // Reset dirty whenever modal (re)opens
-  useEffect(() => {
-    if (open) setDirty(false);
-  }, [open]);
+    if (!open || !booking || !dirty) return;
+    const savedPassport = passportRecords[booking.id] as StoredPassport | undefined;
+    if (!savedPassport) return;
+    setForm((prev) => mergePassportIntoForm(prev, savedPassport));
+  }, [open, booking, passportRecords, dirty]);
 
   const nights = useMemo(() => {
     if (!form.checkIn || !form.checkOut) return 0;
@@ -232,7 +208,7 @@ export function HotelGuestAnketaModal({ open, onClose, booking }: AnketaModalPro
 
   const hasSignature = !!form.signatureImage;
 
-  const handleSave = () => {
+const handleSave = () => {
     if (!booking) return;
     if (!form.fullName.trim() || !hasSignature || !form.acknowledged) {
       toast.error(t('anketaIncomplete'));
@@ -246,14 +222,10 @@ export function HotelGuestAnketaModal({ open, onClose, booking }: AnketaModalPro
       toast.error('Эл. почта должна содержать «@» — например email@example.com');
       return;
     }
-    try {
-      window.localStorage.setItem(STORAGE_PREFIX + booking.id, JSON.stringify(form));
-      toast.success(t('anketaSaved'));
-      setDirty(false);
-      onClose();
-    } catch {
-      toast.error('Storage error');
-    }
+    updateAnketaRecord(booking.id, form);
+    toast.success(t('anketaSaved'));
+    setDirty(false);
+    onClose();
   };
 
   const requestClose = useCallback(() => {

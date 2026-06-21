@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { BookingBar } from './BookingBar';
 import { TimelineScrollbar } from './TimelineScrollbar';
 import { BookingDialog } from './BookingDialog';
+import { useCloudRecord } from '@/hooks/useCloudRecord';
 import { useI18n } from '@/hooks/useI18n';
 import { useAuth } from '@/contexts/AuthContext';
 import { ChevronDown, ChevronRight, User, Users, CalendarCheck2, Plus, X, FolderPlus, DoorOpen, Trash2, AlertTriangle, Check, Tag } from 'lucide-react';
@@ -248,7 +249,22 @@ export function HotelRoomGrid({ bookings, conflictBookings = bookings, onAddBook
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
   const [expandedRooms, setExpandedRooms] = useState<Record<number, boolean>>({});
   const [personNames, setPersonNames] = useState<PersonNames>({});
-  const [extraPersons, setExtraPersons] = useState<ExtraPersons>({});
+  const { records: extraPersonsRecords, updateRecord: updateExtraPersonsRecord } = useCloudRecord<{ count: number }>('grid');
+const extraPersons: ExtraPersons = useMemo(() => {
+  const out: ExtraPersons = {};
+  for (const [roomNumber, rec] of Object.entries(extraPersonsRecords)) {
+    out[Number(roomNumber)] = rec.count;
+  }
+  return out;
+}, [extraPersonsRecords]);
+const setExtraPersons = (updater: (prev: ExtraPersons) => ExtraPersons) => {
+  const next = updater(extraPersons);
+  for (const [roomNumber, count] of Object.entries(next)) {
+    if (extraPersons[Number(roomNumber)] !== count) {
+      updateExtraPersonsRecord(roomNumber, { count });
+    }
+  }
+};
   const [deletedPersonSlots, setDeletedPersonSlots] = useState<Record<number, Set<number>>>({});
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [addCategoryOpen, setAddCategoryOpen] = useState(false);

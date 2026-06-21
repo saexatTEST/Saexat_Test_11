@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { HotelDatePicker } from './HotelDatePicker';
 import { CountrySelect } from './CountrySelect';
+import { useCloudRecord } from '@/hooks/useCloudRecord';
 
 interface GuestDetailsWindowProps {
   open: boolean;
@@ -87,9 +88,11 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
   // Persist passport entry per BOOKING id so it follows the booking across
   // every panel (admin / director / superuser) and modal (Anketa). Falls back
   // to a room/bed key for legacy callers that didn't pass an id.
-  const storageKey = guest.bookingId
-    ? `guest-passport:booking:${guest.bookingId}`
-    : `guest-passport:${guest.roomNumber}:${guest.bedIndex ?? 'main'}`;
+  const recordId = guest.bookingId
+    ? guest.bookingId
+    : `room:${guest.roomNumber}:${guest.bedIndex ?? 'main'}`;
+
+  const { records: passportRecords, updateRecord: updatePassportRecord } = useCloudRecord<PassportData>('guest-passports');
 
   // Build the auto-prefilled view of the passport. We never overwrite a value
   // the user already typed — we only fill the field if it is currently empty.
@@ -109,46 +112,24 @@ export function GuestDetailsWindow({ open, onClose, guest }: GuestDetailsWindowP
 
   const [passport, setPassport] = useState<PassportData>(EMPTY_PASSPORT);
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const load = () => {
-      try {
-        const raw = window.localStorage.getItem(storageKey);
-        const parsed = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-        // Keep passport series and number split so Guest Details matches the Anketa layout.
-        const legacySeries = (parsed.passportSeries || '').toString().trim().toUpperCase();
-        const legacyNumber = (parsed.passportNumber || '').toString().trim();
-        if (legacySeries && !/^[A-Z\u0400-\u04FF]{1,2}\s/.test(legacyNumber)) {
-          const digits = legacyNumber.replace(/\D/g, '');
-          parsed.passportSeries = legacySeries.slice(0, 2);
-          parsed.passportNumber = digits;
-        }
-        const base = { ...EMPTY_PASSPORT, ...(parsed as Partial<PassportData>) };
-        setPassport(buildAutoFill(base));
-      } catch {
-        setPassport(buildAutoFill(EMPTY_PASSPORT));
-      }
-    };
-    load();
-    const onStorage = (e: StorageEvent) => { if (e.key === storageKey) load(); };
-    const onCustom = () => load();
-    window.addEventListener('storage', onStorage);
-    window.addEventListener('sayohat-passport-changed', onCustom);
-    return () => {
-      window.removeEventListener('storage', onStorage);
-      window.removeEventListener('sayohat-passport-changed', onCustom);
-    };
+    const stored = passportRecords[recordId] as Partial<PassportData> | undefined;
+    const legacySeries = ((stored as any)?.passportSeries || '').toString().trim().toUpperCase();
+    const legacyNumber = ((stored as any)?.passportNumber || '').toString().trim();
+    const fixed: Partial<PassportData> = { ...stored };
+    if (legacySeries && !/^[A-Z\u0400-\u04FF]{1,2}\s/.test(legacyNumber)) {
+      const digits = legacyNumber.replace(/\D/g, '');
+      (fixed as any).passportSeries = legacySeries.slice(0, 2);
+      (fixed as any).passportNumber = digits;
+    }
+    const base = { ...EMPTY_PASSPORT, ...fixed };
+    setPassport(buildAutoFill(base));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storageKey, guest.guestLastName, guest.guestFirstName, guest.guestMiddleName]);
+  }, [recordId, passportRecords, guest.guestLastName, guest.guestFirstName, guest.guestMiddleName]);
 
   const updatePassport = (key: PassportKey, value: string) => {
     setPassport((prev) => {
       const next = { ...prev, [key]: value };
-      try {
-        window.localStorage.setItem(storageKey, JSON.stringify(next));
-        window.dispatchEvent(new Event('sayohat-passport-changed'));
-      } catch {
-        /* ignore quota errors */
-      }
+      updatePassportRecord(recordId, next);
       return next;
     });
   };
